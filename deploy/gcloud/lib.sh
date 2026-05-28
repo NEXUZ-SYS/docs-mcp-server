@@ -13,7 +13,7 @@ create_ok() {
   if "$@" 2>/tmp/gc_err; then
     return 0
   fi
-  if grep -qiE "already exists|alreadyExists|already_exists" /tmp/gc_err; then
+  if grep -qiE "already exists|alreadyExists|already_exists|already own it|HTTPError 409|code=409" /tmp/gc_err; then
     return 0
   fi
   cat /tmp/gc_err >&2
