@@ -16,7 +16,7 @@ services:
     container_name: docs-mcp-worker
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8082:8080"
     env_file:
       - .env
     volumes:
@@ -31,9 +31,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 4G
         reservations:
-          memory: 1G
+          memory: 2G
 
   # MCP server - provides AI tool integration endpoint
   mcp:
