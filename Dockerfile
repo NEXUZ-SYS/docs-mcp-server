@@ -44,7 +44,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy package files and database
-COPY package*.json .
+COPY package*.json ./
 COPY db db
 
 # Copy built files from builder
