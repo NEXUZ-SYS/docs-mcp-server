@@ -15,6 +15,8 @@ dist
 
 # Other
 .store
+*.db
+deploy
 README.md
 ARCHITECTURE.md
 CHANGELOG.md

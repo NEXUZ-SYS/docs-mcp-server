@@ -3,6 +3,10 @@ node_modules/
 dist/
 .store/
 public/assets/
+
+# Local deploy secrets (never commit)
+deploy/gcloud/*.secret
+deploy/gcloud/.env.local
 *.log
 .env*
 !*.env.example
