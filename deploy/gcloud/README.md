@@ -68,6 +68,8 @@ gcloud run services update docs-mcp-worker --region=southamerica-east1 --min-ins
 
 ## Troubleshooting
 
-- **mcp/web não alcançam o worker (`/api` timeout):** confirmar `--vpc-egress=all-traffic` e a sub-rede `default` na região. Diagnóstico temporário: subir o worker com `--ingress=all --no-allow-unauthenticated` e testar — **nunca** deixar o worker com `--allow-unauthenticated`.
+- **mcp/web não alcançam o worker (`/api` timeout / "Failed to connect to server"):** dois requisitos (ambos cobertos por `01-prereqs.sh` e `04-deploy-worker.sh`):
+  1. **Private Google Access** habilitado na sub-rede `default` da região (sem ele, o tráfego do Direct VPC egress para a URL do worker não tem rota). Conferir: `gcloud compute networks subnets describe default --region=southamerica-east1 --format='value(privateIpGoogleAccess)'` → `True`.
+  2. Worker com `--ingress=internal --allow-unauthenticated`: o ingress interno é a proteção de rede; o cliente tRPC do mcp/web não envia token IAM, então o worker não pode exigir auth IAM.
 - **Claude.ai falha no registro OAuth (`/oauth/register`):** confirmar DCR habilitado no Auth0.
 - **`SQLITE_IOERR` nos logs do worker:** indício de problema do GCS FUSE; verificar backup e considerar Filestore (ver spec, seção riscos).

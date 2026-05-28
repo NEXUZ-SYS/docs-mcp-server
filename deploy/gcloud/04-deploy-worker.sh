@@ -7,7 +7,7 @@ gcloud run deploy "$SVC_WORKER" \
   --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" \
   --service-account="$RUNTIME_SA" \
   --ingress=internal \
-  --no-allow-unauthenticated \
+  --allow-unauthenticated \
   --min-instances=1 --max-instances=1 --concurrency=20 \
   --cpu=1 --memory=2Gi --timeout=3600 \
   --add-volume=name=data,type=cloud-storage,bucket="$BUCKET" \

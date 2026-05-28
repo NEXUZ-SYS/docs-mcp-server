@@ -24,6 +24,10 @@ log "Service Account de runtime (docs-mcp-run)"
 create_ok gcloud iam service-accounts create docs-mcp-run \
   --display-name="docs-mcp-server runtime" --project "$PROJECT_ID"
 
+log "Private Google Access na sub-rede default (necessário p/ mcp/web alcançarem o worker interno via Direct VPC egress)"
+gcloud compute networks subnets update default --region="$REGION" \
+  --enable-private-ip-google-access --project "$PROJECT_ID"
+
 log "IAM: acesso de objeto aos buckets para o SA de runtime"
 gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --member="serviceAccount:${RUNTIME_SA}" --role="roles/storage.objectAdmin" --project "$PROJECT_ID"
