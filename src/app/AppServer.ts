@@ -503,8 +503,17 @@ export class AppServer {
       return;
     }
 
-    // ProxyAuthManager handles all OAuth2 endpoints automatically
-    const baseUrl = new URL(`http://localhost:${this.serverConfig.port}`);
+    // ProxyAuthManager handles all OAuth2 endpoints automatically.
+    // Behind a TLS-terminating proxy (e.g. Cloud Run), the externally reachable
+    // URL differs from the local bind address. The OAuth metadata is
+    // deliberately config-driven (never derived from the client-controlled Host
+    // header) to avoid audience-binding attacks, so the public URL must be set
+    // explicitly via `auth.publicUrl` (DOCS_MCP_AUTH_PUBLIC_URL). Falls back to
+    // the local bind address for direct/local deployments.
+    const configuredPublicUrl = this.appConfig.auth.publicUrl?.trim();
+    const baseUrl = new URL(
+      configuredPublicUrl || `http://localhost:${this.serverConfig.port}`,
+    );
     this.authManager.registerRoutes(this.server, baseUrl);
 
     logger.debug("OAuth2 proxy endpoints registered");

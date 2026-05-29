@@ -66,6 +66,7 @@ export const DEFAULT_CONFIG = {
     enabled: false,
     issuerUrl: "",
     audience: "",
+    publicUrl: "",
   },
   scraper: {
     maxPages: 1000,
@@ -172,6 +173,7 @@ export const AppConfigSchema = z.object({
       enabled: envBoolean.default(DEFAULT_CONFIG.auth.enabled),
       issuerUrl: z.string().default(DEFAULT_CONFIG.auth.issuerUrl),
       audience: z.string().default(DEFAULT_CONFIG.auth.audience),
+      publicUrl: z.string().default(DEFAULT_CONFIG.auth.publicUrl),
     })
     .default(DEFAULT_CONFIG.auth),
   scraper: z
