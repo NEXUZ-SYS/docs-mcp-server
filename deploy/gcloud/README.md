@@ -62,15 +62,17 @@ export AUTH_AUDIENCE="https://docs-mcp-server"
 bash 04-deploy-unified.sh
 ```
 
-## ⚠️ Caveat de segurança — UI web pública
+## ⚠️ Caveat de segurança — serviço PÚBLICO sem autenticação
 
-No Modo Unificado, **apenas `/mcp` fica atrás do OAuth**. A UI web (`/`) e a API
-(`/web/*`, `/api`) **respondem sem autenticação** — quem tiver a URL pode gerenciar
-o índice (scrape/remove/search) e consumir quota do Gemini. A URL `*.run.app` é
-obscura, mas isso **não** é proteção real. Opções para endurecer (futuro):
-- Aceitar (uso pessoal, alvo de baixo valor).
-- Colocar o serviço inteiro atrás de IAP (exige Load Balancer externo).
-- Voltar ao split com `web` interno + IAM (scripts 06) + Cloud NAT.
+Auth está **desligada** no momento. **Todo o serviço** (`/mcp`, UI web `/`, API `/web/*`,
+`/api`) responde **sem autenticação** — qualquer um com a URL pode usar as tools,
+gerenciar o índice (scrape/remove/search) e **consumir sua quota do Gemini**. A URL
+`*.run.app` é obscura, mas isso **não** é proteção real.
+
+Opções para endurecer quando quiser:
+- **Religar OAuth/DCR** com um IdP turnkey gratuito (WorkOS AuthKit) — ver "Religar a autenticação".
+- Colocar o serviço atrás de **IAP** (exige Load Balancer externo).
+- Restringir `ingress` e acessar via VPN/`gcloud run services proxy`.
 
 ## Validação (todas verificadas neste deploy)
 
@@ -82,27 +84,31 @@ obscura, mas isso **não** é proteção real. Opções para endurecer (futuro):
 
 ## Onboarding da equipe (Claude Code + Claude.ai)
 
-O servidor está no ar e protegido por OAuth/DCR via Auth0 (login com Google).
-Endpoint: `https://docs-mcp-qysz5zbtda-rj.a.run.app/mcp`.
-
-> `.mcp.json` é gitignored neste repo (mistura config pessoal), então **não** é
-> compartilhado pelo git. Cada pessoa adiciona o servidor uma vez com o comando
-> abaixo (sem segredos — o DCR registra cada cliente automaticamente).
+O servidor está no ar **SEM autenticação** no momento (ver caveat abaixo).
+Endpoint: `https://docs-mcp-qysz5zbtda-rj.a.run.app/mcp`. Não há login — conecta direto.
 
 **Claude Code** (cada membro roda uma vez):
 ```bash
 claude mcp add --transport http docs-mcp https://docs-mcp-qysz5zbtda-rj.a.run.app/mcp
-# escopo: --scope user (todos os projetos) ou --scope project (este repo)
+# escopo: --scope user (todos os seus projetos) ou --scope project (este repo)
 ```
-Na primeira chamada de uma tool, o Claude Code abre o navegador → login Google
-(via Auth0) → conectado. Verifique com `claude mcp list` / `/mcp`.
+Verifique com `claude mcp list`. Tools: `search_docs`, `scrape_docs`, etc.
 
 **Claude.ai** (cada membro):
 Settings → Connectors → Add custom connector → URL
-`https://docs-mcp-qysz5zbtda-rj.a.run.app/mcp` → conectar → login Google.
+`https://docs-mcp-qysz5zbtda-rj.a.run.app/mcp` → conectar (sem login).
 
-**Controle de acesso:** quem pode entrar é definido no Auth0 (conexão Google,
-opcionalmente restrita ao domínio `nexuz.com.br` via Hosted Domain).
+### Religar a autenticação no futuro
+
+Auth via OAuth/OIDC é **opcional** no `04-deploy-unified.sh`. Para religar, basta
+redeployar com um issuer + audience de um IdP com **DCR + UI hospedada** (ex:
+WorkOS AuthKit — grátis ≤1M MAU; ver histórico). Auth0 **não** serve para DCR aqui
+(bloqueia third-party clients em APIs custom; só funciona com client first-party manual).
+```bash
+AUTH_ISSUER_URL="https://<slug>.authkit.app" \
+AUTH_AUDIENCE="https://docs-mcp-qysz5zbtda-rj.a.run.app/sse" \
+  bash deploy/gcloud/04-deploy-unified.sh
+```
 
 ## Backup / restore
 
