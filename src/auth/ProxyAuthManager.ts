@@ -192,6 +192,9 @@ export class ProxyAuthManager {
     // against.
     server.get("/.well-known/oauth-protected-resource", async (_request, reply) => {
       const origin = baseUrl.origin;
+      // Normalize the issuer (which may carry a trailing slash, e.g. Auth0) so the
+      // derived well-known URLs don't end up with a `//.well-known/...` double slash.
+      const issuerBase = this.config.issuerUrl?.replace(/\/+$/, "") ?? "";
       const metadata = {
         resource: `${origin}/sse`,
         authorization_servers: [this.config.issuerUrl],
@@ -201,8 +204,8 @@ export class ProxyAuthManager {
         resource_documentation: "https://github.com/arabold/docs-mcp-server#readme",
         // Enhanced metadata for better discoverability
         resource_server_metadata_url: `${origin}/.well-known/oauth-protected-resource`,
-        authorization_server_metadata_url: `${this.config.issuerUrl}/.well-known/openid-configuration`,
-        jwks_uri: `${this.config.issuerUrl}/.well-known/jwks.json`,
+        authorization_server_metadata_url: `${issuerBase}/.well-known/openid-configuration`,
+        jwks_uri: `${issuerBase}/.well-known/jwks.json`,
         // Supported MCP transports
         mcp_transports: [
           {
@@ -360,8 +363,13 @@ export class ProxyAuthManager {
    * Supports both JWT and opaque token validation methods.
    */
   private async discoverEndpoints() {
+    // Strip any trailing slash before appending the well-known path. Some
+    // issuers (e.g. Auth0) use an `iss` value WITH a trailing slash, which must
+    // be preserved for token validation, but appending `/.well-known/...` to it
+    // would produce a `//.well-known/...` double slash that those providers 404.
+    const issuerBase = this.config.issuerUrl?.replace(/\/+$/, "") ?? "";
     // Try OAuth2 authorization server discovery first (RFC 8414)
-    const oauthDiscoveryUrl = `${this.config.issuerUrl}/.well-known/oauth-authorization-server`;
+    const oauthDiscoveryUrl = `${issuerBase}/.well-known/oauth-authorization-server`;
 
     try {
       const oauthResponse = await fetch(oauthDiscoveryUrl);
@@ -384,7 +392,7 @@ export class ProxyAuthManager {
     }
 
     // Fallback to OIDC discovery
-    const oidcDiscoveryUrl = `${this.config.issuerUrl}/.well-known/openid-configuration`;
+    const oidcDiscoveryUrl = `${issuerBase}/.well-known/openid-configuration`;
     const oidcResponse = await fetch(oidcDiscoveryUrl);
     if (!oidcResponse.ok) {
       throw new Error(
@@ -402,7 +410,8 @@ export class ProxyAuthManager {
    */
   private async discoverUserinfoEndpoint(): Promise<string | null> {
     try {
-      const oidcDiscoveryUrl = `${this.config.issuerUrl}/.well-known/openid-configuration`;
+      const issuerBase = this.config.issuerUrl?.replace(/\/+$/, "") ?? "";
+      const oidcDiscoveryUrl = `${issuerBase}/.well-known/openid-configuration`;
       const response = await fetch(oidcDiscoveryUrl);
       if (response.ok) {
         const config = await response.json();
