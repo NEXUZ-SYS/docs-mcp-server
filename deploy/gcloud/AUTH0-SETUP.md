@@ -53,20 +53,37 @@ Apps registrados via DCR (como o Claude.ai) não especificam o audience da sua A
 
 > Isso garante que o JWT emitido tenha `aud = https://docs-mcp-server`, que é o que o servidor valida (`DOCS_MCP_AUTH_AUDIENCE`).
 
-## 5. (Opcional) Conexão de login
+## 5. Login com Google (a equipe entra com contas Google/Workspace)
 
-Em **Authentication → Database**, confirme que existe `Username-Password-Authentication` habilitada. Se quiser login com Google/GitHub, habilite em **Authentication → Social**. Qualquer conexão habilitada e marcada como padrão funciona.
+Para que cada membro entre com a conta Google de sempre — sem criar senha — habilite o Google como **social connection** no Auth0:
+
+1. **Authentication → Social → Create Connection → Google / Google Workspace**.
+2. Para começar rápido, use as **Auth0 dev keys** (botão padrão; bom para validar). Para produção, crie credenciais próprias:
+   - No GCP (☰ → **Google Auth Platform → Clients → Create client → Web application**), adicione como **Authorized redirect URI**:
+     ```
+     https://<seu-tenant>.<região>.auth0.com/login/callback
+     ```
+   - Cole o **Client ID/Secret** desse client Google na connection do Auth0.
+3. Em **Applications**, deixe a connection **habilitada** (toggle) para que ela seja oferecida no login.
+4. (Opcional, recomendado p/ equipe) Restrinja ao seu domínio Workspace: na connection Google, defina o **Hosted Domain (HD)** (ex: `nexuz.com.br`) para aceitar só e-mails desse domínio.
+
+> Identidade = Google/Workspace; Authorization Server = Auth0 (que fornece o DCR que o MCP exige). O `Username-Password-Authentication` pode ficar habilitado como fallback ou ser desativado — sua escolha.
+
+## 6. Controle de quem acessa
+
+- **Modo Workspace (HD):** qualquer conta do domínio loga.
+- **Mais restrito:** desabilite signups e gerencie usuários em **User Management → Users**, ou use uma **Action/Rule** para permitir só e-mails de uma lista.
 
 ---
 
 ## Resultado — me envie estes dois valores
 
 ```
-AUTH0_ISSUER_URL=https://<seu-tenant>.<região>.auth0.com/
-AUTH0_AUDIENCE=https://docs-mcp-server
+AUTH_ISSUER_URL=https://<seu-tenant>.<região>.auth0.com/
+AUTH_AUDIENCE=https://docs-mcp-server
 ```
 
-Com eles eu rodo o deploy do `mcp` (`05-deploy-mcp.sh`) e validamos o fluxo OAuth completo conectando no Claude.ai.
+Com eles eu redeployo o serviço unificado (`04-deploy-unified.sh`, troca de 2 env vars, dados preservados), valido o fluxo OAuth/DCR e te entrego os comandos de equipe (Claude Code `--scope project`) e o conector do Claude.ai.
 
 ---
 
