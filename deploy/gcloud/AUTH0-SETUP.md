@@ -1,96 +1,77 @@
-# Auth0 — Setup para o conector Claude.ai (quickdoc)
+# Auth0 — Setup para o conector MCP (Claude Code + Claude.ai)
 
-O `docs-mcp-server` funciona como **proxy OAuth2**: ele descobre os endpoints do Auth0, e o Claude.ai se **auto-registra via Dynamic Client Registration (DCR)** e faz login pelo Auth0. Este guia configura o Auth0 para esse fluxo.
+O `docs-mcp-server` usa o Auth0 como **Authorization Server** com **Dynamic Client
+Registration (DCR)** — assim cada cliente (Claude Code, Claude.ai) se auto-registra
+e nenhum segredo precisa ser distribuído. A equipe loga com **contas Google/Workspace**
+via uma social connection do Auth0.
 
-> Tempo estimado: ~10 min. Tudo no plano gratuito do Auth0.
+> ⚠️ O dashboard do Auth0 muda com frequência. **Fonte de verdade (mantida pela Auth0):**
+> - Guia oficial MCP: https://auth0.com/ai/docs/mcp
+> - Guia 3rd-party (passo a passo, atual): https://zuplo.com/docs/articles/configuring-auth0-for-mcp-auth
+>
+> Abaixo o **mapa dos passos + os valores exatos do nosso servidor**. Se um rótulo
+> estiver diferente, siga o guia oficial usando estes mesmos valores.
 
----
+## Valores deste servidor
 
-## 1. Criar conta/tenant
+| Campo | Valor |
+|---|---|
+| API Identifier (audience) | `https://docs-mcp-server` |
+| Default Audience | `https://docs-mcp-server` |
+| Scopes | `openid`, `profile`, `email` |
 
-1. Acesse https://auth0.com → **Sign up** (free).
-2. Ao criar, você escolhe um **tenant domain** e uma região. Anote o domínio, ex:
-   `meu-tenant.us.auth0.com`
-3. Seu **issuer** será esse domínio com `https://` e **barra final**:
-   ```
-   AUTH0_ISSUER_URL=https://meu-tenant.us.auth0.com/
-   ```
+## Passos (dashboard Auth0)
 
-## 2. Criar a API (define o `audience`)
+### 1. Criar a API
+**Applications → APIs → + Create API**
+- Name: `docs-mcp-server`
+- Identifier: `https://docs-mcp-server`
+- Signing Algorithm: `RS256`
 
-1. Menu lateral → **Applications → APIs → + Create API**.
-2. Preencha:
-   - **Name:** `docs-mcp-server`
-   - **Identifier:** `https://docs-mcp-server`  ← este é o **audience** (não precisa ser uma URL real, só um identificador único)
-   - **Signing Algorithm:** `RS256` (padrão)
-3. **Create.** Guarde:
-   ```
-   AUTH0_AUDIENCE=https://docs-mcp-server
-   ```
+### 2. Default Audience (emite JWT em vez de token opaco) — **essencial**
+**Settings → General → Default Audience** = `https://docs-mcp-server`, salvar.
 
-## 3. Habilitar Dynamic Client Registration (DCR)
+> Os clientes MCP enviam `resource` mas não `audience`. Sem Default Audience, o Auth0
+> emite token opaco (difícil de validar). Com ele, emite JWT que o servidor valida via JWKS.
 
-Sem isso o Claude.ai não consegue se registrar.
+### 3. Habilitar DCR
+**Settings → Advanced** →
+- toggle **Dynamic Client Registration (DCR)** = ON
+- toggle **Enable Application Connections** = ON
+- salvar
 
-1. Menu lateral → **Settings** (engrenagem no rodapé) → aba **Advanced**.
-2. Ligue **OIDC Dynamic Application Registration** = **ON**.
-3. Ainda em **Settings → Advanced**, em **Default Directory**, defina:
-   ```
-   Username-Password-Authentication
-   ```
-   (é o nome da conexão de banco de dados padrão do Auth0; necessário para apps registrados via DCR conseguirem autenticar usuários).
+### 4. Permissões padrão para third-party apps — **passo novo, não pule**
+Clientes registrados via DCR são "third-party"; eles só acessam a API se houver
+**default permissions** definidas. Configure as permissões/escopos padrão da API
+para third-party apps conforme o guia oficial (seção *default permissions* /
+*third-party applications*). Sem isso, o login completa mas o cliente não recebe acesso.
 
-## 4. Default Audience (passo-chave)
+### 5. Permitir que o Management API gerencie connections (p/ DCR + Application Connections)
+**Applications → Auth0 Management API → (aba) APIs/Permissions** → autorizar e marcar
+**`update:connections`** → Update.
 
-Apps registrados via DCR (como o Claude.ai) não especificam o audience da sua API. Para os tokens saírem **assinados para a sua API**, defina um audience padrão:
-
-1. **Settings → API Authorization Settings → Default Audience:**
-   ```
-   https://docs-mcp-server
-   ```
-   (o mesmo Identifier do passo 2).
-2. **Save.**
-
-> Isso garante que o JWT emitido tenha `aud = https://docs-mcp-server`, que é o que o servidor valida (`DOCS_MCP_AUTH_AUDIENCE`).
-
-## 5. Login com Google (a equipe entra com contas Google/Workspace)
-
-Para que cada membro entre com a conta Google de sempre — sem criar senha — habilite o Google como **social connection** no Auth0:
-
-1. **Authentication → Social → Create Connection → Google / Google Workspace**.
-2. Para começar rápido, use as **Auth0 dev keys** (botão padrão; bom para validar). Para produção, crie credenciais próprias:
-   - No GCP (☰ → **Google Auth Platform → Clients → Create client → Web application**), adicione como **Authorized redirect URI**:
-     ```
-     https://<seu-tenant>.<região>.auth0.com/login/callback
-     ```
-   - Cole o **Client ID/Secret** desse client Google na connection do Auth0.
-3. Em **Applications**, deixe a connection **habilitada** (toggle) para que ela seja oferecida no login.
-4. (Opcional, recomendado p/ equipe) Restrinja ao seu domínio Workspace: na connection Google, defina o **Hosted Domain (HD)** (ex: `nexuz.com.br`) para aceitar só e-mails desse domínio.
-
-> Identidade = Google/Workspace; Authorization Server = Auth0 (que fornece o DCR que o MCP exige). O `Username-Password-Authentication` pode ficar habilitado como fallback ou ser desativado — sua escolha.
-
-## 6. Controle de quem acessa
-
-- **Modo Workspace (HD):** qualquer conta do domínio loga.
-- **Mais restrito:** desabilite signups e gerencie usuários em **User Management → Users**, ou use uma **Action/Rule** para permitir só e-mails de uma lista.
+### 6. Login com Google (equipe entra com contas Google/Workspace)
+**Authentication → Social → Create Connection → Google**
+- Início rápido: usar as *Auth0 dev keys*.
+- Produção: criar um OAuth client no GCP (☰ → Google Auth Platform → Clients → Web application)
+  com redirect `https://<seu-tenant>.<região>.auth0.com/login/callback`, e colar Client ID/Secret.
+- (Recomendado) Restringir ao domínio: definir **Hosted Domain (HD)** = `nexuz.com.br`.
+- Habilitar a connection nas Applications.
 
 ---
 
 ## Resultado — me envie estes dois valores
 
 ```
-AUTH_ISSUER_URL=https://<seu-tenant>.<região>.auth0.com/
+AUTH_ISSUER_URL=https://<seu-tenant>.<região>.auth0.com/   (com barra final)
 AUTH_AUDIENCE=https://docs-mcp-server
 ```
 
-Com eles eu redeployo o serviço unificado (`04-deploy-unified.sh`, troca de 2 env vars, dados preservados), valido o fluxo OAuth/DCR e te entrego os comandos de equipe (Claude Code `--scope project`) e o conector do Claude.ai.
+Com eles eu redeployo o serviço unificado (`04-deploy-unified.sh` — troca de 2 env vars,
+dados preservados, ~1 min), valido o fluxo OAuth/DCR (metadata → registro → JWT via JWKS)
+e te entrego os comandos de equipe (Claude Code `--scope project`) e do conector Claude.ai.
 
----
-
-## Notas de validação / fallback
-
-- O servidor valida o token assim: tenta **JWT via JWKS** (checando `iss` e `aud`); se falhar, faz **fallback para o endpoint `userinfo`** do Auth0. Ou seja, mesmo que haja um descasamento de audience, um token Auth0 válido ainda autentica — o setup é tolerante.
-- Se o Claude.ai falhar no registro (`/oauth/register`), revise o passo 3 (DCR ON + Default Directory).
-- O endpoint que você cola no Claude.ai é `https://<mcp-url>.run.app/mcp` (a URL sai do `05-deploy-mcp.sh`).
-- Endpoints de discovery que o Auth0 expõe (para conferência):
-  `https://<tenant>/.well-known/openid-configuration`
+## Validação do meu lado (após você enviar os valores)
+- `authorization_servers` na metadata aponta para o Auth0
+- registro dinâmico via `/oidc/register` aceito
+- token chega como JWT com `aud=https://docs-mcp-server` e valida por JWKS
