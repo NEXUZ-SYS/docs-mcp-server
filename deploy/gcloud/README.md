@@ -80,6 +80,30 @@ obscura, mas isso **não** é proteção real. Opções para endurecer (futuro):
 4. Pipeline E2E (validado): scrape de 1 página → `Pages:1 Chunks:1` → busca retorna conteúdo. Confirma internet + embeddings Gemini + SQLite/GCS + busca híbrida.
 5. **Claude.ai**: Settings → Connectors → Add custom connector → `<URL>/mcp` + (Google manual) Client ID/Secret nas advanced settings → completar OAuth.
 
+## Onboarding da equipe (Claude Code + Claude.ai)
+
+O servidor está no ar e protegido por OAuth/DCR via Auth0 (login com Google).
+Endpoint: `https://docs-mcp-qysz5zbtda-rj.a.run.app/mcp`.
+
+> `.mcp.json` é gitignored neste repo (mistura config pessoal), então **não** é
+> compartilhado pelo git. Cada pessoa adiciona o servidor uma vez com o comando
+> abaixo (sem segredos — o DCR registra cada cliente automaticamente).
+
+**Claude Code** (cada membro roda uma vez):
+```bash
+claude mcp add --transport http docs-mcp https://docs-mcp-qysz5zbtda-rj.a.run.app/mcp
+# escopo: --scope user (todos os projetos) ou --scope project (este repo)
+```
+Na primeira chamada de uma tool, o Claude Code abre o navegador → login Google
+(via Auth0) → conectado. Verifique com `claude mcp list` / `/mcp`.
+
+**Claude.ai** (cada membro):
+Settings → Connectors → Add custom connector → URL
+`https://docs-mcp-qysz5zbtda-rj.a.run.app/mcp` → conectar → login Google.
+
+**Controle de acesso:** quem pode entrar é definido no Auth0 (conexão Google,
+opcionalmente restrita ao domínio `nexuz.com.br` via Hosted Domain).
+
 ## Backup / restore
 
 `07-backup.sh` cria um Cloud Run Job diário (03:00) que copia o `.db` para o bucket
