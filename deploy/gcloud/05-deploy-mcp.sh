@@ -13,10 +13,10 @@ gcloud run deploy "$SVC_MCP" \
   --ingress=all --allow-unauthenticated \
   --min-instances=0 --max-instances=3 --cpu=1 --memory=512Mi \
   --network=default --subnet=default --vpc-egress=all-traffic \
-  --set-env-vars=DOCS_MCP_EMBEDDING_MODEL="$EMBEDDING_MODEL",DOCS_MCP_EMBEDDINGS_VECTOR_DIMENSION="$VECTOR_DIMENSION",DOCS_MCP_AUTH_ENABLED=true,DOCS_MCP_AUTH_ISSUER_URL="$AUTH0_ISSUER_URL",DOCS_MCP_AUTH_AUDIENCE="$AUTH0_AUDIENCE" \
+  --set-env-vars=DOCS_MCP_EMBEDDING_MODEL="$EMBEDDING_MODEL",DOCS_MCP_EMBEDDINGS_VECTOR_DIMENSION="$VECTOR_DIMENSION" \
   --set-secrets=GOOGLE_API_KEY="${SECRET_GOOGLE_API_KEY}:latest" \
   --command=node \
-  --args="--enable-source-maps,dist/index.js,mcp,--protocol,http,--host,0.0.0.0,--port,8080,--server-url,${WORKER_URL}/api,--no-logo"
+  --args="--enable-source-maps,dist/index.js,mcp,--protocol,http,--host,0.0.0.0,--port,8080,--server-url,${WORKER_URL}/api,--auth-enabled,--auth-issuer-url,${AUTH0_ISSUER_URL},--auth-audience,${AUTH0_AUDIENCE},--no-logo"
 
 MCP_URL="$(gcloud run services describe "$SVC_MCP" --region "$REGION" --project "$PROJECT_ID" --format='value(status.url)')"
 ok "mcp público em ${MCP_URL}"
