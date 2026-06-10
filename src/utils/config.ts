@@ -5,6 +5,17 @@ import yaml from "yaml";
 import { z } from "zod";
 import { normalizeEnvValue } from "./env";
 import { logger } from "./logger";
+import { normalizePublicOrigin } from "./serverOrigin";
+
+const managedConfigVectorDimensionOmissionMarker =
+  "docs-mcp-server-managed-vector-dimension-omitted";
+const managedConfigHeader = [
+  `# ${managedConfigVectorDimensionOmissionMarker}`,
+  "# embeddings.vectorDimension is omitted when it comes from generated defaults.",
+  "# Add embeddings.vectorDimension explicitly to override native model dimensions.",
+  "",
+].join("\n");
+const vectorDimensionPath = ["embeddings", "vectorDimension"];
 
 const envStringArray = z
   .union([z.array(z.string()), z.string()])
@@ -42,6 +53,26 @@ const envBoolean = z
   })
   .pipe(z.boolean());
 
+const publicOriginSchema = z
+  .preprocess((value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }, z.string().optional())
+  .transform((value, ctx) => {
+    try {
+      return normalizePublicOrigin(value);
+    } catch (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return z.NEVER;
+    }
+  });
+
 // --- Default Global Configuration ---
 
 export const DEFAULT_CONFIG = {
@@ -54,6 +85,7 @@ export const DEFAULT_CONFIG = {
   server: {
     protocol: "auto",
     host: "127.0.0.1",
+    publicOrigin: undefined as string | undefined,
     ports: {
       default: 6280,
       worker: 8080,
@@ -157,6 +189,7 @@ export const AppConfigSchema = z.object({
     .object({
       protocol: z.string().default(DEFAULT_CONFIG.server.protocol),
       host: z.string().default(DEFAULT_CONFIG.server.host),
+      publicOrigin: publicOriginSchema.optional(),
       ports: z
         .object({
           default: z.coerce.number().int().default(DEFAULT_CONFIG.server.ports.default),
@@ -167,7 +200,12 @@ export const AppConfigSchema = z.object({
         .default(DEFAULT_CONFIG.server.ports),
       heartbeatMs: z.coerce.number().int().default(DEFAULT_CONFIG.server.heartbeatMs),
     })
-    .default(DEFAULT_CONFIG.server),
+    .default({
+      protocol: DEFAULT_CONFIG.server.protocol,
+      host: DEFAULT_CONFIG.server.host,
+      ports: DEFAULT_CONFIG.server.ports,
+      heartbeatMs: DEFAULT_CONFIG.server.heartbeatMs,
+    }),
   auth: z
     .object({
       enabled: envBoolean.default(DEFAULT_CONFIG.auth.enabled),
@@ -371,10 +409,18 @@ export const AppConfigSchema = z.object({
     .default(DEFAULT_CONFIG.assembly),
 });
 
-export type AppConfig = z.infer<typeof AppConfigSchema>;
+const vectorDimensionExplicit = Symbol("vectorDimensionExplicit");
+
+type ParsedAppConfig = z.infer<typeof AppConfigSchema>;
+
+export type AppConfig = Omit<ParsedAppConfig, "embeddings"> & {
+  embeddings: ParsedAppConfig["embeddings"] & {
+    [vectorDimensionExplicit]?: boolean;
+  };
+};
 
 // Get defaults from the schema
-export const defaults = AppConfigSchema.parse({});
+export const defaults = AppConfigSchema.parse({}) as AppConfig;
 
 // --- Mapping Configuration ---
 // Maps flat env vars and CLI args to the nested config structure
@@ -412,6 +458,11 @@ const configMappings: ConfigMapping[] = [
     cli: "port",
   },
   { path: ["server", "host"], env: ["DOCS_MCP_HOST", "HOST"], cli: "host" },
+  {
+    path: ["server", "publicOrigin"],
+    env: ["DOCS_MCP_SERVER_PUBLIC_ORIGIN"],
+    cli: "publicOrigin",
+  },
   {
     path: ["app", "embeddingModel"],
     env: ["DOCS_MCP_EMBEDDING_MODEL"],
@@ -466,22 +517,41 @@ export function loadConfig(
 
   // 2. Load Config File (if exists) or use empty object
   const fileConfig = loadConfigFile(configPath) || {};
+  const hasManagedVectorDimensionOmissionMarker =
+    hasManagedConfigVectorDimensionOmissionMarker(configPath);
 
   // 3. Merge Defaults < File
   const baseConfig = deepMerge(defaults, fileConfig) as ConfigObject;
 
-  // 4. Write back to file (Auto-Update) - ONLY if using default path
+  // 4. Map Env Vars and CLI Args
+  const envConfig = mapEnvToConfig();
+  const cliConfig = mapCliToConfig(cliArgs);
+  const vectorDimensionWasExplicit = wasVectorDimensionExplicit(
+    fileConfig,
+    envConfig,
+    cliConfig,
+    isReadOnlyConfig,
+    hasManagedVectorDimensionOmissionMarker,
+  );
+  const fileVectorDimensionWasExplicit = wasVectorDimensionExplicit(
+    fileConfig,
+    {},
+    {},
+    isReadOnlyConfig,
+    hasManagedVectorDimensionOmissionMarker,
+  );
+
+  // 5. Write back to file (Auto-Update) - ONLY if using default path
   if (!isReadOnlyConfig) {
     try {
-      saveConfigFile(configPath, baseConfig);
+      saveConfigFile(configPath, baseConfig, {
+        managedDefaultConfig: true,
+        omitVectorDimension: !fileVectorDimensionWasExplicit,
+      });
     } catch (error) {
       logger.warn(`Failed to save config file to ${configPath}: ${error}`);
     }
   }
-
-  // 5. Map Env Vars and CLI Args
-  const envConfig = mapEnvToConfig();
-  const cliConfig = mapCliToConfig(cliArgs);
 
   // 6. Merge: Base < Env < CLI
   const mergedInput = deepMerge(
@@ -496,7 +566,16 @@ export function loadConfig(
 
   const parseResult = AppConfigSchema.safeParse(mergedInput);
   if (parseResult.success) {
-    return parseResult.data;
+    return markVectorDimensionSource(
+      parseResult.data as AppConfig,
+      vectorDimensionWasExplicit,
+    );
+  }
+
+  if (hasParseIssueAtPath(parseResult.error, ["server", "publicOrigin"])) {
+    throw new Error(
+      `Invalid configuration for server.publicOrigin: ${parseResult.error.message}`,
+    );
   }
 
   // The file on disk is structurally wrong (e.g., array fields saved as
@@ -532,14 +611,56 @@ export function loadConfig(
     setAtPath(fallbackInput, ["app", "embeddingModel"], "text-embedding-3-small");
   }
   const fallback = AppConfigSchema.parse(fallbackInput);
+  const fallbackConfig = markVectorDimensionSource(
+    fallback as AppConfig,
+    wasVectorDimensionExplicit({}, envConfig, cliConfig, false, false),
+  );
   if (!isReadOnlyConfig) {
     try {
-      saveConfigFile(configPath, fallback as unknown as ConfigObject);
+      saveConfigFile(configPath, fallbackConfig as unknown as ConfigObject, {
+        managedDefaultConfig: true,
+        omitVectorDimension: true,
+      });
     } catch (error) {
       logger.warn(`Failed to write fresh config file ${configPath}: ${error}`);
     }
   }
-  return fallback;
+  return fallbackConfig;
+}
+
+function hasManagedConfigVectorDimensionOmissionMarker(filePath: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+
+  try {
+    return fs
+      .readFileSync(filePath, "utf8")
+      .includes(managedConfigVectorDimensionOmissionMarker);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Returns true when the embedding vector dimension was set by user config,
+ * environment, or CLI rather than coming from generated defaults.
+ */
+export function isVectorDimensionExplicit(config: AppConfig): boolean {
+  return config.embeddings[vectorDimensionExplicit] === true;
+}
+
+/**
+ * Marks an AppConfig as having an explicit or default-derived vector dimension.
+ */
+export function markVectorDimensionSource(
+  config: AppConfig,
+  explicit: boolean,
+): AppConfig {
+  Object.defineProperty(config.embeddings, vectorDimensionExplicit, {
+    value: explicit,
+    enumerable: false,
+    configurable: true,
+  });
+  return config;
 }
 
 function loadConfigFile(filePath: string): Record<string, unknown> | null {
@@ -550,6 +671,7 @@ function loadConfigFile(filePath: string): Record<string, unknown> | null {
     if (filePath.endsWith(".json")) {
       return JSON.parse(content);
     }
+
     return yaml.parse(content) || {};
   } catch (error) {
     logger.warn(`Failed to parse config file ${filePath}: ${error}`);
@@ -557,18 +679,80 @@ function loadConfigFile(filePath: string): Record<string, unknown> | null {
   }
 }
 
-function saveConfigFile(filePath: string, config: Record<string, unknown>): void {
+function wasVectorDimensionExplicit(
+  fileConfig: ConfigObject,
+  envConfig: ConfigObject,
+  cliConfig: ConfigObject,
+  isReadOnlyConfig: boolean,
+  hasManagedVectorDimensionOmissionMarker: boolean,
+): boolean {
+  if (
+    getAtPath(envConfig, vectorDimensionPath) !== undefined ||
+    getAtPath(cliConfig, vectorDimensionPath) !== undefined
+  ) {
+    return true;
+  }
+
+  const fileValue = getAtPath(fileConfig, vectorDimensionPath);
+  if (fileValue === undefined) {
+    return false;
+  }
+
+  if (
+    isReadOnlyConfig ||
+    fileValue !== DEFAULT_CONFIG.embeddings.vectorDimension ||
+    hasManagedVectorDimensionOmissionMarker
+  ) {
+    return true;
+  }
+
+  return !looksLikeLegacyGeneratedEmbeddingDefaults(fileConfig);
+}
+
+function looksLikeLegacyGeneratedEmbeddingDefaults(fileConfig: ConfigObject): boolean {
+  const embeddings = fileConfig.embeddings;
+  if (
+    typeof embeddings !== "object" ||
+    embeddings === null ||
+    Array.isArray(embeddings)
+  ) {
+    return false;
+  }
+
+  return Object.keys(DEFAULT_CONFIG.embeddings).every((key) =>
+    Object.hasOwn(embeddings, key),
+  );
+}
+
+interface SaveConfigOptions {
+  managedDefaultConfig?: boolean;
+  omitVectorDimension?: boolean;
+}
+
+function saveConfigFile(
+  filePath: string,
+  config: Record<string, unknown>,
+  options: SaveConfigOptions = {},
+): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
+  const configToWrite = cloneConfigValue(config) as ConfigObject;
+  if (options.omitVectorDimension) {
+    unsetAtPath(configToWrite, vectorDimensionPath);
+  }
+
   let content: string;
   if (filePath.endsWith(".json")) {
-    content = JSON.stringify(config, null, 2);
+    content = JSON.stringify(configToWrite, null, 2);
   } else {
     // Default to YAML
-    content = yaml.stringify(config);
+    content = yaml.stringify(configToWrite);
+    if (options.managedDefaultConfig) {
+      content = `${managedConfigHeader}${content}`;
+    }
   }
 
   logger.debug(`Updating config file at ${filePath}`);
@@ -680,6 +864,50 @@ function getAtPath(obj: ConfigObject, pathArr: string[]): unknown {
   return current;
 }
 
+function unsetAtPath(obj: ConfigObject, pathArr: string[]): void {
+  let current: unknown = obj;
+  for (const key of pathArr.slice(0, -1)) {
+    if (typeof current !== "object" || current === null) {
+      return;
+    }
+    current = (current as ConfigObject)[key];
+  }
+
+  if (typeof current === "object" && current !== null) {
+    delete (current as ConfigObject)[pathArr[pathArr.length - 1]];
+  }
+}
+
+function cloneConfigValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneConfigValue(item));
+  }
+
+  if (typeof value === "object" && value !== null) {
+    const output: ConfigObject = {};
+    for (const [key, child] of Object.entries(value)) {
+      output[key] = cloneConfigValue(child);
+    }
+    return output;
+  }
+
+  return value;
+}
+
+function hasPath(obj: ConfigObject, pathArr: string[]): boolean {
+  let current: unknown = obj;
+  for (const key of pathArr) {
+    if (typeof current !== "object" || current === null || !Object.hasOwn(current, key)) {
+      return false;
+    }
+    current = (current as ConfigObject)[key];
+  }
+  return true;
+}
+function hasParseIssueAtPath(error: z.ZodError, pathArr: string[]): boolean {
+  return error.issues.some((issue) => issue.path.join(".") === pathArr.join("."));
+}
+
 function deepMerge(target: unknown, source: unknown): unknown {
   if (typeof target !== "object" || target === null) return source;
   if (typeof source !== "object" || source === null) return target;
@@ -721,7 +949,7 @@ function deepMerge(target: unknown, source: unknown): unknown {
  */
 export function isValidConfigPath(path: string): boolean {
   const pathArr = path.split(".");
-  return getAtPath(DEFAULT_CONFIG as ConfigObject, pathArr) !== undefined;
+  return hasPath(DEFAULT_CONFIG as ConfigObject, pathArr);
 }
 
 /**
