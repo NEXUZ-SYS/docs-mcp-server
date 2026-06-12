@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: docs-mcp
+  namespace: default
+  labels:
+    app.kubernetes.io/name: docs-mcp-server
+  annotations:
+    # Mesmo Issuer namespaced usado pelos apps de produção (odoo-ingress) neste
+    # cluster — HTTP-01 via Let's Encrypt, comprovado para hosts *.nexuz.app.
+    cert-manager.io/issuer: le-prod-http
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - docs-mcp.nexuz.app # ⚙️ CONFIRMAR hostname
+      secretName: docs-mcp-tls # cert-manager cria/preenche este Secret
+  rules:
+    # Tudo (UI web em /, MCP em /mcp, API em /api) sai na MESMA porta 8080,
+    # então uma única regra de path "/" cobre o serviço inteiro.
+    # Traefik faz streaming/SSE nativamente (sem buffering), então o transporte
+    # HTTP/SSE do MCP funciona sem tuning extra.
+    - host: docs-mcp.nexuz.app # ⚙️ CONFIRMAR hostname
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: docs-mcp
+                port:
+                  number: 8080

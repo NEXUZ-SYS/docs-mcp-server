@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docs-mcp
+  namespace: default
+  labels:
+    app.kubernetes.io/name: docs-mcp-server
+spec:
+  replicas: 1
+  # Recreate (não RollingUpdate): SQLite é single-writer e o PVC é RWO.
+  # Recreate garante que o pod antigo TERMINA (soltando o Block Volume) antes
+  # de o novo subir — evita o erro "Multi-Attach" no rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: docs-mcp-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: docs-mcp-server
+    spec:
+      # Imagem privada no OCIR.
+      imagePullSecrets:
+        - name: docs-mcp-ocir-cred
+      # Fixa no nodepool "pool-apps" (apps internos: n8n, chatwoot, etc.).
+      # nodeSelector garante que só agenda nesses nodes; a toleration libera a
+      # taint env=apps:NoSchedule que protege o pool.
+      nodeSelector:
+        env: apps
+      tolerations:
+        - key: env
+          operator: Equal
+          value: apps
+          effect: NoSchedule
+      securityContext:
+        # A imagem roda como o usuário `node` (uid 1000). fsGroup faz o
+        # Kubernetes ajustar a posse do Block Volume recém-montado para este
+        # grupo, deixando /data gravável sem rodar como root.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: docs-mcp
+          # Região gru (São Paulo) + tenancy-namespace grw1wmd5faqb (via `oci os ns get`).
+          #   docker push gru.ocir.io/grw1wmd5faqb/docs-mcp-server:<tag>
+          image: gru.ocir.io/grw1wmd5faqb/docs-mcp-server:latest
+          imagePullPolicy: IfNotPresent
+          # ENTRYPOINT da imagem já é `node --enable-source-maps dist/index.js`.
+          # Sem subcomando => servidor UNIFICADO (MCP + web + API + worker embutido).
+          args:
+            - "--protocol"
+            - "http"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8080"
+            - "--no-logo"
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: DOCS_MCP_STORE_PATH
+              value: "/data"
+            # IMPORTANTE: estes dois DEVEM bater com o que gerou o documents.db
+            # migrado do GCS. Se divergir, o search_docs quebra silenciosamente.
+            - name: DOCS_MCP_EMBEDDING_MODEL
+              value: "gemini:gemini-embedding-001"
+            - name: DOCS_MCP_EMBEDDINGS_VECTOR_DIMENSION
+              value: "3072"
+            # Tuning: reduz a pressão de CPU (Chromium) em scrapes concorrentes.
+            - name: DOCS_MCP_SCRAPER_MAX_CONCURRENCY
+              value: "2"
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: docs-mcp-secrets
+                  key: GOOGLE_API_KEY
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config
+          # startupProbe generoso: cobre carga de módulos nativos (better-sqlite3,
+          # tree-sitter) e migrations do banco no primeiro boot.
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 30 # até 5 min para subir
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          # liveness com folga: NÃO pode matar o pod durante um scrape longo que
+          # eventualmente deixe o event loop ocupado. TCP only, sem checar /.
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "1"
+              memory: "1Gi"
+            limits:
+              cpu: "4"
+              memory: "4Gi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: docs-mcp-data
+        - name: config
+          # /config (XDG_CONFIG_HOME) é regenerado de env a cada start — efêmero.
+          emptyDir: {}

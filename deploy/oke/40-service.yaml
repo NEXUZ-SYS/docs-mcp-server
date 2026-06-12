@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: docs-mcp
+  namespace: default
+  labels:
+    app.kubernetes.io/name: docs-mcp-server
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: docs-mcp-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

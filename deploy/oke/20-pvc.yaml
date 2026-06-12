@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: docs-mcp-data
+  namespace: default
+  labels:
+    app.kubernetes.io/name: docs-mcp-server
+spec:
+  # SQLite é single-writer: um único pod monta este volume (RWO).
+  accessModes:
+    - ReadWriteOnce
+  # Storage class do OCI Block Volume (CSI). Confirme com:
+  #   kubectl get storageclass
+  storageClassName: oci-bv
+  resources:
+    requests:
+      # 50Gi é o MÍNIMO de um OCI Block Volume. Performance escala com o tamanho
+      # (modo Balanced ~ 60 IOPS/GB). 50Gi cobre o documents.db com folga.
+      storage: 50Gi
