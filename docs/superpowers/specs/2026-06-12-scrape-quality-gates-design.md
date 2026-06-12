@@ -53,6 +53,9 @@ Caso contrário, descartar o que foi indexado e devolver um **erro tipado com re
 4. **Rollout:** **hard-fail imediato** — gate-fail descarta e devolve erro tipado desde o primeiro release.
 5. **Defaults conservadores:** `thin` só bloqueia 0 docs reais inicialmente; `denyPaths` default = `demos`/`examples`. Evita falso-positivo em scrapes legítimos pequenos.
 6. **`discover_source`:** **fora de escopo** — anotado como plano futuro.
+7. **Posicionamento vs. upstream:** **híbrido com PR upstream como alvo primário.** A
+   implementação é desenhada PR-shaped e contribuída a `arabold/docs-mcp-server`;
+   carregada no fork enquanto não mergeia. Ver seção "Upstream contribution strategy".
 
 ## Arquitetura
 
@@ -151,6 +154,38 @@ denyPaths, locale-normalize, FM-3 typed error, errorCodes expostos.
 
 **Fora (plano futuro):** `discover_source(library)` tool; staging-version real com swap de
 ponteiro; paginação de árvores GitHub truncadas (apenas sinalizada como typed error agora).
+
+## Upstream contribution strategy
+
+**Objetivo primário:** mergear esta feature em `arabold/docs-mcp-server` (upstream).
+Hoje o fork tem **0 desvio no core** (só deploy/auth/docs); esta seria a 1ª divergência de
+lógica, em arquivos quentes (`PipelineManager.ts` 31 commits/ano, `GitHubScraperStrategy.ts`
+24/ano). Mergear upstream zera o custo de manutenção do fork.
+
+### Requisitos de PR (para maximizar aprovação)
+- **Tudo em inglês**: código, TSDoc, mensagens de commit (lowercase, conventional — já é a
+  norma do `AGENTS.md`), e descrição do PR.
+- **Descrição do PR completa**: (1) problema — os 3 FMs com a evidência empírica real
+  (snapshot `google/generative-ai-docs`: 679/1045 sob `demos/`; tabela de subPath 0-match);
+  (2) por que cada gate; (3) passo a passo da implementação por milestone; (4) cobertura de
+  testes; (5) compatibilidade retroativa (API aditiva, sem breaking change).
+- **Feature flag / opt-out**: gates configuráveis com defaults conservadores, para o
+  maintainer aceitar sem medo de regressão em scrapes legítimos.
+- **(Opcional) RFC/issue antes do código** para alinhar a API (`ScrapeOutcome` enum,
+  `errorCodes`, param `expectTerms`) — reduz retrabalho se o maintainer preferir outra forma.
+
+### Isolamento (serve ao PR e ao fork-carry)
+- Lógica em **arquivos novos** (`outcomeGate.ts`, `relevanceGate.ts`) — review fácil, merge
+  limpo, baixo acoplamento.
+- **Seam mínimo** nos arquivos quentes: 1 chamada de hook em `PipelineManager.ts:666`, não
+  edições espalhadas.
+- **API aditiva**: campos opcionais novos em `ScraperOptions` e na resposta das tools — sem
+  quebrar assinaturas existentes.
+- Commits pequenos e temáticos por milestone (M1…M5) → PR revisável incrementalmente.
+
+### Fork-carry enquanto não mergeia
+- Branch `feat/scrape-quality-gates` no `origin` (NEXUZ-SYS); deploy a partir dela.
+- Quando upstream mergear (ou pedir mudanças), rebasear/descartar o carry conforme o caso.
 
 ## Lado consumidor (devflow — secundário, fora deste repo)
 
