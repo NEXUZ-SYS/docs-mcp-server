@@ -107,7 +107,8 @@ executeJob() retorna sem throw
 6. **FM-3 específico** — `GitHubScraperStrategy`.
    - Quando `/tree/<branch>/<subPath>` filtra a árvore para **0 itens** →
      `GITHUB_SUBPATH_NOT_FOUND`, remediação lista os top-level dirs reais do repo.
-   - `treeData.truncated` vira sinal tipado (não só `logger.warn`).
+   - `treeData.truncated` permanece como `logger.warn` nesta entrega; promovê-lo a sinal
+     tipado + paginação de árvore truncada está **deferido** (ver "Escopo explícito" → fora).
 
 7. **Erros tipados** — `errorCode` em `JobInfo` (`GetJobInfoTool`, `ListJobsTool`) +
    no retorno de `scrape_docs`. Códigos:
