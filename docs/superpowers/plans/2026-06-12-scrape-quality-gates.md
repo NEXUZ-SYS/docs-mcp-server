@@ -12,6 +12,29 @@
 
 ---
 
+## Review revisions (R1 — applied after architect + code-reviewer pass)
+
+This plan was revised against two adversarial reviews that verified every claim against real code:
+
+- **F1 (BLOCK, fixed):** `computeInScopeRatio` is now ref-agnostic (`toScopeKey`) — a GitHub `/tree/`
+  root aligns with its `/blob/` children. The naive pathname-prefix version would have false-failed
+  SCOPE_DRIFT on every GitHub subpath scrape. Task 10 has a real-shape regression test.
+- **F2 (BLOCK, fixed):** the gate now **skips rollback entirely on `isRefresh` / `clean===false`**,
+  preventing deletion of pre-existing good docs. Task 4 has a no-rollback red test.
+- **F3/F4/F5 (fixed):** seam uses `this.store` (not a non-existent field); `QualityGateError` lives in
+  `src/pipeline/errors.ts` (not `utils/`, avoiding a layering inversion); `ScraperError` gains an
+  additive `code` field only (constructor untouched, stack-chaining preserved).
+- **Unwriteable tests (fixed):** HttpFetcher tests use `res.source` + server-received headers
+  (no `requestHeaders`/`finalUrl` on `RawContent`); `localeStrategy` added to `FetchOptions`; matcher
+  is `matchesAnyPattern` (minimatch), not `isMatch`; `DEFAULT_DENY_PATHS` includes top-level forms;
+  GitHub mock shape clarified.
+- **F6 (fixed):** SCOPE_DRIFT + OFF_TOPIC are **opt-in via `expectTerms` for v1** (hard-fail-immediate
+  rollout). `denyPaths` still applies to all scrapes.
+- **F8 (P3, noted):** `getVersionMetrics` reuses `queryLibraryVersions` (correct, casing verified); a
+  targeted `COUNT(...) WHERE library=? AND version=?` is a nice-to-have follow-up, not a blocker.
+
+---
+
 ## File Structure
 
 **New files (low merge-conflict risk, easy review):**
@@ -366,6 +389,25 @@ it("rolls back and fails the job when the gate returns empty", async () => {
   expect(job?.errorCode).toBe(ScrapeErrorCode.EMPTY_RESULT);
   expect(removeSpy).toHaveBeenCalledWith("lib", "1.0.0");
 });
+
+it("does NOT roll back a refresh job that fails the gate (no data loss)", async () => {
+  // A refresh preserves pre-existing good docs; a failing gate must never removeVersion.
+  vi.spyOn(docService, "getVersionMetrics").mockResolvedValue({
+    documentCount: 0,
+    distinctUrls: 0,
+  });
+  const removeSpy = vi.spyOn(docService, "removeVersion").mockResolvedValue();
+
+  const jobId = await manager.enqueueScrapeJob("lib", "1.0.0", {
+    url: "https://x/tree",
+    isRefresh: true,
+  });
+  await manager.waitForJobCompletion(jobId).catch(() => {});
+
+  const job = await manager.getJob(jobId);
+  expect(removeSpy).not.toHaveBeenCalled();
+  expect(job?.outcome).toBe(ScrapeOutcome.INDEXED); // gate skipped for refresh
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -385,6 +427,14 @@ Add to `PipelineManager` (new method, keeps the seam tiny):
   private async applyQualityGate(
     job: InternalPipelineJob,
   ): Promise<OutcomeVerdict | null> {
+    // SAFETY (review F2): never gate-rollback a refresh or append (clean=false). Those
+    // flows preserve a version that may already hold good docs; removeVersion() would
+    // destroy them (data loss). Refresh only updates changed pages, so a transient thin
+    // re-index must not wipe the prior index. Treat as indexed and skip the gate.
+    if (job.scraperOptions.isRefresh || job.scraperOptions.clean === false) {
+      job.outcome = ScrapeOutcome.INDEXED;
+      return null;
+    }
     const counts = await this.store.getVersionMetrics(job.library, job.version);
     const metrics: JobOutcomeMetrics = {
       documentCount: counts.documentCount,
@@ -401,14 +451,14 @@ Add to `PipelineManager` (new method, keeps the seam tiny):
       `❌ Quality gate failed for ${job.library}@${job.version}: ` +
         `${verdict.outcome} (${verdict.errorCode}) — discarding staged docs`,
     );
-    await this.documentManagementService.removeVersion(job.library, job.version);
+    await this.store.removeVersion(job.library, job.version);
     job.outcome = verdict.outcome;
     job.errorCode = verdict.errorCode;
     return verdict;
   }
 ```
 
-(Note: `this.store` here is the `DocumentManagementService` instance the manager already holds — confirm the field name; it exposes both `getVersionMetrics` and `removeVersion`.)
+(`this.store` is the manager's `DocumentManagementService` field — confirmed at `PipelineManager.ts:35,46`; it exposes both `getVersionMetrics` and `removeVersion`. There is no `this.documentManagementService`.)
 
 - [ ] **Step 4: Wire the seam into the COMPLETED block**
 
@@ -444,9 +494,13 @@ Replace the success block (currently around lines 659-668):
       logger.info(`✅ Job completed: ${jobId}`);
 ```
 
-Add `QualityGateError` to `src/utils/errors.ts`:
+Add `QualityGateError` to **`src/pipeline/errors.ts`** (NOT `utils/errors.ts` — review F4: that
+file is a leaf the pipeline imports from; importing the pipeline-layer `OutcomeVerdict` into it
+inverts the layering and risks a cycle. `src/pipeline/errors.ts` already holds `CancellationError`):
 
 ```ts
+import type { OutcomeVerdict } from "./outcomeGate";
+
 /** Raised when a scrape finished but failed a quality gate (empty/thin/degenerate). */
 export class QualityGateError extends Error {
   constructor(public readonly verdict: OutcomeVerdict) {
@@ -456,12 +510,14 @@ export class QualityGateError extends Error {
 }
 ```
 
-Add imports at the top of `PipelineManager.ts`:
+Add imports at the top of `PipelineManager.ts` (note `ScraperError` is **not** currently
+imported there — review confirmed — and is needed for the Step 5 mapping):
 
 ```ts
 import { evaluateOutcome, type OutcomeVerdict } from "./outcomeGate";
-import { type JobOutcomeMetrics, ScrapeOutcome } from "./types";
-import { QualityGateError } from "../utils/errors";
+import { type JobOutcomeMetrics, type ScrapeErrorCode, ScrapeOutcome } from "./types";
+import { QualityGateError } from "./errors";
+import { ScraperError } from "../utils/errors";
 ```
 
 - [ ] **Step 5: Run test to verify it passes**
@@ -564,9 +620,12 @@ git commit -m "test(fixtures): add real github tree snapshot for scope tests"
 
 ```ts
 it("throws GITHUB_SUBPATH_NOT_FOUND when a /tree/ subpath matches no files", async () => {
-  const tree = require("../../../test/fixtures/github-tree-generative-ai-docs.json");
+  // fetchRepositoryTree returns { tree: <full API response>, resolvedBranch }.
+  // processItem reads tree.tree (the entries array), so the mock's `tree` IS the
+  // whole response object. Do NOT pass fixture.tree here — that double-unwraps.
+  const treeResponse = require("../../../test/fixtures/github-tree-generative-ai-docs.json");
   vi.spyOn(strategy as any, "fetchRepositoryTree").mockResolvedValue({
-    tree,
+    tree: treeResponse,
     resolvedBranch: "main",
   });
   await expect(
@@ -585,22 +644,24 @@ Expected: FAIL (currently returns SUCCESS with only the wiki link).
 
 - [ ] **Step 3: Add optional `code` to `ScraperError`**
 
-In `src/utils/errors.ts`, extend the `ScraperError` constructor (keep existing positional args; add an optional field):
+In `src/utils/errors.ts`, **add only a field** — do NOT rewrite the constructor (review F5: the
+real constructor sets `this.name = this.constructor.name` and chains `cause.stack`; rewriting it
+drops stack-chaining and breaks subclass names like `RedirectError`). The real shape is
+`constructor(message, public readonly isRetryable = false, public readonly cause?)`. Add:
 
 ```ts
 export class ScraperError extends Error {
   /** Optional machine-readable code surfaced to callers as errorCode. */
   public code?: string;
-  constructor(message: string, isRetryable = false, cause?: Error) {
-    super(message);
-    this.name = "ScraperError";
-    this.isRetryable = isRetryable;
-    this.cause = cause;
-  }
+
+  // constructor and body UNCHANGED — leave existing
+  //   constructor(message: string, public readonly isRetryable = false, public readonly cause?: Error)
+  //   { super(message); this.name = this.constructor.name; if (cause?.stack) { ... } }
 }
 ```
 
-(Match the file's actual current field names — `isRetryable`/`cause` — do not rename them.)
+Set the code after construction at the throw sites (`err.code = "..."`). Note `TlsCertificateError`
+already declares a `code` ctor param; a base-class optional `public code?: string` is subtype-compatible.
 
 - [ ] **Step 4: Add the guard in `GitHubScraperStrategy.processItem`**
 
@@ -671,6 +732,11 @@ In `ScraperOptions` (`src/scraper/types.ts`), additive:
   localeStrategy?: "pin-en" | "strip" | "passthrough";
 ```
 
+**Also add the same optional `localeStrategy` field to `FetchOptions` in
+`src/scraper/fetcher/types.ts`** — `HttpFetcher` receives `FetchOptions`, not `ScraperOptions`,
+so the value must be plumbed there too (the scraper strategy already forwards scraper options
+into fetch options at the call site; add `localeStrategy` to that mapping).
+
 - [ ] **Step 2: Write the failing tests**
 
 ```ts
@@ -682,13 +748,24 @@ it("aborts with LOCALE_REDIRECT_LOOP on a cyclic ?hl redirect", async () => {
 });
 
 it("pins Accept-Language and strips hl with pin-en", async () => {
+  // RawContent has no requestHeaders/finalUrl (review). Assert the header the SERVER
+  // received, and use res.source for the final URL.
+  let receivedAcceptLanguage: string | undefined;
+  let receivedPath: string | undefined;
+  server.on("request", (req) => {
+    receivedAcceptLanguage = req.headers["accept-language"];
+    receivedPath = req.url;
+  });
   const res = await fetcher.fetch(`${base}/docs?hl=pt-br`, { localeStrategy: "pin-en" });
-  expect(res.requestHeaders?.["accept-language"]).toBe("en");
-  expect(res.finalUrl).not.toMatch(/hl=/);
+  expect(receivedAcceptLanguage).toBe("en");
+  expect(receivedPath).not.toMatch(/hl=/);
+  expect(res.source).not.toMatch(/hl=/);
 });
 ```
 
-(Use the existing `HttpFetcher.test.ts` mock-server pattern — it already spins up local servers for redirect tests.)
+(Use the existing `HttpFetcher.test.ts` mock-server pattern — it already spins up local servers for
+redirect tests. `RawContent` exposes the final URL as `res.source` — there is no `requestHeaders`
+field, so assert request headers via the mock server's received request.)
 
 - [ ] **Step 3: Run to verify fail**
 
@@ -697,25 +774,28 @@ Expected: FAIL.
 
 - [ ] **Step 4: Implement**
 
-In `HttpFetcher.fetch`, before issuing the request:
+The work goes in **`performFetch`** (the redirect loop lives there, ~lines 120-202; `fetch` at
+line 89 just delegates). At the top of `performFetch`, before the loop:
 
 ```ts
     const localeStrategy = options?.localeStrategy ?? "pin-en";
-    let requestUrl = url;
+    let currentUrl = url;
     if (localeStrategy !== "passthrough") {
-      const u = new URL(requestUrl);
+      const u = new URL(currentUrl);
       for (const p of ["hl", "lang", "locale"]) u.searchParams.delete(p);
-      requestUrl = u.toString();
+      currentUrl = u.toString();
     }
     const localeHeaders =
       localeStrategy === "pin-en" ? { "Accept-Language": "en" } : {};
 ```
 
-Merge `localeHeaders` into the axios request headers. In the redirect-follow loop (around line 120-201), track seen locations and detect a cycle within the existing `MAX_REDIRECTS` cap:
+Merge `localeHeaders` into the axios request headers object the method already builds. In the
+redirect-follow loop, reuse the existing `currentUrl`/`location` vars (real names) and track seen
+locations to detect a cycle within the existing `MAX_REDIRECTS`/`redirectCount` cap:
 
 ```ts
-    const seenLocations = new Set<string>();
-    // inside the while loop, after resolving `location`:
+    const seenLocations = new Set<string>([new URL(currentUrl).toString()]);
+    // inside the loop, after the existing `location` (Location header) is resolved to redirectUrl:
     const normalizedLoc = new URL(location, currentUrl).toString();
     if (seenLocations.has(normalizedLoc)) {
       const err = new ScraperError(
@@ -727,6 +807,8 @@ Merge `localeHeaders` into the axios request headers. In the redirect-follow loo
     }
     seenLocations.add(normalizedLoc);
 ```
+
+`res.source` is already set to the final URL at the end of `performFetch` — no new field needed.
 
 - [ ] **Step 5: Run to verify pass**
 
@@ -760,28 +842,38 @@ In `ScraperOptions`:
 
 ```ts
   /**
-   * Glob patterns (micromatch) whose matching paths are excluded from indexing,
+   * Glob patterns (minimatch) whose matching paths are excluded from indexing,
    * even when in scope. Applied on top of scope/includePatterns.
-   * @default ["**\/demos/**", "**\/examples/**"]
+   * @default DEFAULT_DENY_PATHS (demos/examples at any depth)
    */
   denyPaths?: string[];
 ```
 
-Define the default constant next to the other scraper defaults (e.g. `src/utils/config.ts` scraper block) so it resolves once:
+Define the default constant next to the other scraper defaults (e.g. `src/utils/config.ts` scraper
+block) so it resolves once. Include both top-level and nested forms (minimatch `**/x/**` does not
+match a top-level `x/...`):
 
 ```ts
-export const DEFAULT_DENY_PATHS = ["**/demos/**", "**/examples/**"];
+export const DEFAULT_DENY_PATHS = [
+  "demos/**",
+  "**/demos/**",
+  "examples/**",
+  "**/examples/**",
+];
 ```
 
 - [ ] **Step 2: Write the failing test**
 
 ```ts
 it("denyPaths excludes demos/** from a repo-root crawl", async () => {
-  const tree = require("../../../test/fixtures/github-tree-generative-ai-docs.json");
-  vi.spyOn(strategy as any, "fetchRepositoryTree").mockResolvedValue({ tree, resolvedBranch: "main" });
+  const treeResponse = require("../../../test/fixtures/github-tree-generative-ai-docs.json");
+  vi.spyOn(strategy as any, "fetchRepositoryTree").mockResolvedValue({
+    tree: treeResponse,
+    resolvedBranch: "main",
+  });
   const res = await strategy.processItem(
     { url: "https://github.com/google/generative-ai-docs", depth: 0 },
-    { url: "https://github.com/google/generative-ai-docs", denyPaths: ["**/demos/**"] } as any,
+    { url: "https://github.com/google/generative-ai-docs", denyPaths: ["**/demos/**", "demos/**"] } as any,
   );
   const demoLinks = res.links.filter((l) => l.includes("/demos/"));
   expect(demoLinks).toHaveLength(0);
@@ -796,18 +888,24 @@ Expected: FAIL (demos currently included — 679 of them).
 
 - [ ] **Step 4: Implement in `shouldProcessFile`**
 
-At the top of `shouldProcessFile` (after the `item.type !== "blob"` guard), reuse the existing `micromatch`/`patternMatcher` util:
+At the top of `shouldProcessFile` (after the `item.type !== "blob"` guard), reuse the existing
+matcher. **Review correction:** the export is `matchesAnyPattern` (minimatch-backed), NOT `isMatch`
+— `src/scraper/utils/patternMatcher.ts` exports `matchesAnyPattern(path, patterns)` and
+`shouldIncludeUrl(...)`. Import `matchesAnyPattern`:
 
 ```ts
     const denyPaths = options.denyPaths ?? DEFAULT_DENY_PATHS;
-    if (denyPaths.length > 0 && isMatch(item.path, denyPaths)) {
+    if (denyPaths.length > 0 && matchesAnyPattern(item.path, denyPaths)) {
       return false;
     }
 ```
 
-(Use the project's existing matcher — check `src/scraper/utils/patternMatcher.ts` for the exported `isMatch`/`shouldIncludeUrl` helper and reuse it rather than importing micromatch directly.)
+`matchesAnyPattern` normalizes a leading `/` then minimatches with `{ dot: true }`. A top-level
+`demos/x.js` is NOT matched by `**/demos/**` alone (needs a leading segment), so the default must
+include both forms — see the updated `DEFAULT_DENY_PATHS` below. The Task 9 test asserts both.
 
-For web crawls, add the same `denyPaths` check inside `BaseScraperStrategy.shouldProcessUrl` against the URL pathname.
+For web crawls, add the same `matchesAnyPattern(pathname, denyPaths)` check inside
+`BaseScraperStrategy.shouldProcessUrl` against the URL pathname.
 
 - [ ] **Step 5: Run to verify pass**
 
@@ -854,6 +952,17 @@ describe("relevanceGate", () => {
     expect(ratio).toBeCloseTo(1.0); // all under /o/r
   });
 
+  it("aligns a github /tree/ root with /blob/ children (review F1: no false scope drift)", () => {
+    // Real shape: root is a /tree/<branch>/<subpath>, children are /blob/<branch>/<path>.
+    // A naive pathname-prefix compare would score 0 here; the ref-agnostic key must score 2/3.
+    const ratio = computeInScopeRatio("https://github.com/o/r/tree/main/site/en", [
+      "https://github.com/o/r/blob/main/site/en/a.md",
+      "https://github.com/o/r/blob/main/site/en/sub/b.md",
+      "https://github.com/o/r/blob/main/demos/x.js",
+    ]);
+    expect(ratio).toBeCloseTo(2 / 3); // 2 under site/en, demos out of scope
+  });
+
   it("matches expectTerms against sampled chunk text (keyword path)", () => {
     const matched = sampleExpectTermsMatch(
       ["use generateContent to call the model", "unrelated text"],
@@ -877,18 +986,38 @@ Expected: FAIL ("Cannot find module './relevanceGate'").
 - [ ] **Step 4: Implement (keyword path first; cosine optional behind the same fn)**
 
 ```ts
-/** Fraction (0..1) of `indexedUrls` whose path is under the requested root URL's path. */
+/**
+ * Normalizes a URL to a host-qualified, ref-agnostic path for scope comparison.
+ * GitHub blob/tree URLs collapse `/owner/repo/(blob|tree)/<branch>/<rest>` to
+ * `/owner/repo/<rest>` so a `/tree/` root and its `/blob/` children align (review F1).
+ */
+export function toScopeKey(rawUrl: string): { host: string; path: string } | null {
+  try {
+    const u = new URL(rawUrl);
+    let path = u.pathname;
+    if (u.hostname.endsWith("github.com")) {
+      const ref = path.match(/^\/([^/]+)\/([^/]+)\/(?:blob|tree)\/[^/]+\/(.*)$/);
+      if (ref) {
+        path = `/${ref[1]}/${ref[2]}/${ref[3]}`;
+      } else {
+        const base = path.match(/^\/([^/]+)\/([^/]+)/);
+        if (base) path = `/${base[1]}/${base[2]}`;
+      }
+    }
+    return { host: u.hostname, path: path.replace(/\/+$/, "") };
+  } catch {
+    return null;
+  }
+}
+
+/** Fraction (0..1) of `indexedUrls` whose scope key is under the root URL's scope key. */
 export function computeInScopeRatio(rootUrl: string, indexedUrls: string[]): number {
   if (indexedUrls.length === 0) return 0;
-  const root = new URL(rootUrl);
-  const rootPrefix = root.pathname.replace(/\/+$/, "");
+  const root = toScopeKey(rootUrl);
+  if (!root) return 0;
   const inScope = indexedUrls.filter((u) => {
-    try {
-      const p = new URL(u);
-      return p.hostname === root.hostname && p.pathname.startsWith(rootPrefix);
-    } catch {
-      return false;
-    }
+    const k = toScopeKey(u);
+    return k !== null && k.host === root.host && k.path.startsWith(root.path);
   }).length;
   return inScope / indexedUrls.length;
 }
@@ -971,11 +1100,13 @@ Extend the metrics built in Task 4:
     const opts = job.scraperOptions;
     let inScopeUrlRatio: number | undefined;
     let expectTermsMatched: boolean | undefined;
-    if (opts.expectTerms?.length || opts.url) {
+    // Review F6: scope-drift and off-topic are OPT-IN for v1 (rollout is hard-fail-immediate).
+    // Both relevance axes are computed only when the caller signals intent via `expectTerms`.
+    // denyPaths still trims demos/examples for everyone; a future release can promote
+    // scope-drift to default-on once warn-mode telemetry confirms low false-positive rates.
+    if (opts.expectTerms?.length) {
       const urls = await this.store.listIndexedUrls(job.library, job.version);
       inScopeUrlRatio = urls.length ? computeInScopeRatio(opts.url, urls) : undefined;
-    }
-    if (opts.expectTerms?.length) {
       const chunks = await this.store.sampleChunks(job.library, job.version, 20);
       expectTermsMatched = sampleExpectTermsMatch(chunks, opts.expectTerms);
     }
