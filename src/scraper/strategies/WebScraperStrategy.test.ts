@@ -1927,8 +1927,9 @@ describe("WebScraperStrategy", () => {
       options.scope = "subpages";
       options.maxDepth = 1;
       const pages: Record<string, string> = {
+        // Real ai.google.dev shape: bare title line (NO H1) + ## section — exercises FM-F too.
         "https://ai.google.dev/gemini-api/docs/llms.txt":
-          "# Gemini API Docs\n\n## Docs\n\n" +
+          "Gemini API Docs and API Reference\n\n## Docs\n\n" +
           "- [Text generation](https://ai.google.dev/gemini-api/docs/text-generation.md.txt): gen\n" +
           "- [Quickstart](https://ai.google.dev/gemini-api/docs/quickstart.md.txt): qs\n",
         "https://ai.google.dev/gemini-api/docs/text-generation.md.txt":
