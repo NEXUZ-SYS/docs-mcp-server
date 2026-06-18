@@ -152,6 +152,7 @@ See **[Embedding Models](docs/guides/embedding-models.md)** for configuring **Ol
 
 ### Markdown-Optimized Web Scraping
 -   Web scrapes and refreshes automatically probe for `llms.txt` at the documentation subpath and site root before normal crawling. When found, the curated links become additional crawl seeds, and pages discovered this way prefer `.md` URL variants such as `/guide/index.html.md` or `/page.html.md` before falling back to the original page.
+-   Pointing a scrape directly at a site's `llms.txt` (e.g. `scrape_docs(url=".../docs/llms.txt")`) imports the pages it lists, preferring published `.md`/`.md.txt` markdown variants and fetching them as-is.
 -   Web requests send `Accept: text/markdown, text/html;q=0.9, */*;q=0.8` by default. Servers that support Markdown content negotiation, including Cloudflare Markdown for Agents, can return Markdown directly so the scraper bypasses HTML-to-Markdown conversion for cleaner output.
 -   This behavior is automatic and requires no configuration. Custom `Accept` headers are preserved when provided.
 

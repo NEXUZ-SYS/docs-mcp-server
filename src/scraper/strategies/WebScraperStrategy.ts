@@ -128,6 +128,23 @@ export class WebScraperStrategy extends BaseScraperStrategy {
     return mimeType ? MimeTypeUtils.isMarkdown(mimeType) : false;
   }
 
+  /**
+   * True when the URL path already points at a markdown variant we can fetch as-is
+   * (e.g. `.md`, `.markdown`, or the `.md.txt` form some doc sites publish in llms.txt).
+   * Prevents building a broken double-extension variant like `page.md.txt.md`.
+   * @param url The URL to inspect.
+   * @returns Whether the URL path ends with a recognized markdown variant suffix.
+   */
+  private endsWithMarkdownVariant(url: string): boolean {
+    let path: string;
+    try {
+      path = new URL(url).pathname.toLowerCase();
+    } catch {
+      return false;
+    }
+    return path.endsWith(".md") || path.endsWith(".markdown") || path.endsWith(".md.txt");
+  }
+
   private async fetchItemContent(
     item: QueueItem,
     options: ScraperOptions,
@@ -135,7 +152,11 @@ export class WebScraperStrategy extends BaseScraperStrategy {
   ): Promise<RawContent> {
     const fetchOptions = this.createFetchOptions(item, options, signal);
 
-    if (!item.fromLlmsTxt || this.isMarkdownUrl(item.url)) {
+    if (
+      !item.fromLlmsTxt ||
+      this.isMarkdownUrl(item.url) ||
+      this.endsWithMarkdownVariant(item.url)
+    ) {
       return this.fetcher.fetch(item.url, fetchOptions);
     }
 
@@ -307,8 +328,27 @@ export class WebScraperStrategy extends BaseScraperStrategy {
 
     try {
       if (isLlmsTxtUrl(url)) {
-        logger.debug(`Skipping llms.txt meta-file: ${url}`);
-        return { url, links: [], status: FetchStatus.SUCCESS };
+        // FM-E: anchor subpages-scope to the llms.txt's parent directory so the listed
+        // sibling pages pass shouldProcessUrl. Without this, computeBaseDirectory(
+        // ".../llms.txt") yields ".../llms.txt/" and the siblings are rejected. The normal
+        // path sets canonicalBaseUrl via updateCanonicalBaseUrl, but this branch returns
+        // before that, so set it here.
+        if (item.depth === 0) {
+          const anchor = new URL(url);
+          anchor.pathname = anchor.pathname.replace(/\/[^/]*$/, "/");
+          anchor.search = "";
+          anchor.hash = "";
+          this.canonicalBaseUrl = anchor;
+        }
+        // FM-B: don't index the llms.txt itself, but DO expand it — seed the listed pages
+        // from the pending probe (populated by probeLlmsTxt in scrape()).
+        // consumePendingLlmsTxtQueueItems returns [] for depth !== 0, so nested llms.txt
+        // links stay skipped.
+        const queueItems = this.consumePendingLlmsTxtQueueItems(item, options);
+        logger.debug(
+          `llms.txt meta-file ${url}: queued ${queueItems.length} listed page(s)`,
+        );
+        return { url, links: [], queueItems, status: FetchStatus.SUCCESS };
       }
 
       // Log when processing with ETag for conditional requests

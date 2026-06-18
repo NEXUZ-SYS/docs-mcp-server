@@ -1864,6 +1864,111 @@ describe("WebScraperStrategy", () => {
         expect.anything(),
       );
     });
+
+    describe("endsWithMarkdownVariant", () => {
+      it("recognizes markdown-ish path suffixes", () => {
+        expect((strategy as any).endsWithMarkdownVariant("https://x.dev/a.md")).toBe(
+          true,
+        );
+        expect(
+          (strategy as any).endsWithMarkdownVariant("https://x.dev/a.markdown"),
+        ).toBe(true);
+        expect(
+          (strategy as any).endsWithMarkdownVariant(
+            "https://x.dev/docs/text-generation.md.txt",
+          ),
+        ).toBe(true);
+      });
+      it("rejects non-markdown paths and bare directories", () => {
+        expect(
+          (strategy as any).endsWithMarkdownVariant("https://x.dev/docs/quickstart"),
+        ).toBe(false);
+        expect(
+          (strategy as any).endsWithMarkdownVariant("https://x.dev/docs/page.html"),
+        ).toBe(false);
+        expect((strategy as any).endsWithMarkdownVariant("https://x.dev/docs/")).toBe(
+          false,
+        );
+      });
+    });
+
+    it("processItem on an llms.txt URL queues the listed pages (subpages scope, parent-dir anchored)", async () => {
+      // Real harness: `strategy` from beforeEach (loadConfig). Set a pending probe with two
+      // sibling .md.txt pages and confirm they are queued under DEFAULT subpages scope —
+      // this only passes if FM-E anchors scope to the llms.txt's parent dir (…/docs/).
+      (strategy as any).pendingLlmsTxtProbe = {
+        url: "https://ai.google.dev/gemini-api/docs/llms.txt",
+        result: {
+          links: [
+            { url: "https://ai.google.dev/gemini-api/docs/text-generation.md.txt" },
+            { url: "https://ai.google.dev/gemini-api/docs/quickstart.md.txt" },
+          ],
+        },
+      };
+      const result: ProcessItemResult = await (strategy as any).processItem(
+        { url: "https://ai.google.dev/gemini-api/docs/llms.txt", depth: 0 },
+        {
+          ...options,
+          url: "https://ai.google.dev/gemini-api/docs/llms.txt",
+          scope: "subpages",
+        },
+        undefined,
+      );
+      expect(result.status).toBe(FetchStatus.SUCCESS);
+      expect((result.queueItems ?? []).map((q) => q.url)).toEqual([
+        "https://ai.google.dev/gemini-api/docs/text-generation.md.txt",
+        "https://ai.google.dev/gemini-api/docs/quickstart.md.txt",
+      ]);
+      expect((result.queueItems ?? []).every((q) => q.fromLlmsTxt === true)).toBe(true);
+    });
+
+    it("imports all pages listed in an llms.txt given as the input url (gemini shape, subpages)", async () => {
+      options.url = "https://ai.google.dev/gemini-api/docs/llms.txt";
+      options.scope = "subpages";
+      options.maxDepth = 1;
+      const pages: Record<string, string> = {
+        "https://ai.google.dev/gemini-api/docs/llms.txt":
+          "# Gemini API Docs\n\n## Docs\n\n" +
+          "- [Text generation](https://ai.google.dev/gemini-api/docs/text-generation.md.txt): gen\n" +
+          "- [Quickstart](https://ai.google.dev/gemini-api/docs/quickstart.md.txt): qs\n",
+        "https://ai.google.dev/gemini-api/docs/text-generation.md.txt":
+          "# Text generation\nUse generateContent to generate text.",
+        "https://ai.google.dev/gemini-api/docs/quickstart.md.txt":
+          "# Quickstart\nInstall the SDK and call generateContent.",
+      };
+      mockFetchFn.mockImplementation(async (url: string) => {
+        const body = pages[url];
+        return body
+          ? {
+              content: body,
+              mimeType: "text/plain",
+              source: url,
+              status: FetchStatus.SUCCESS,
+            }
+          : {
+              content: "",
+              mimeType: "text/plain",
+              source: url,
+              status: FetchStatus.NOT_FOUND,
+            };
+      });
+
+      const progressCallback = vi.fn<ProgressCallback<ScraperProgressEvent>>();
+      await strategy.scrape(options, progressCallback);
+
+      const indexed = progressCallback.mock.calls
+        .map((c) => c[0].result?.url)
+        .filter(Boolean);
+      expect(indexed).toEqual(
+        expect.arrayContaining([
+          "https://ai.google.dev/gemini-api/docs/text-generation.md.txt",
+          "https://ai.google.dev/gemini-api/docs/quickstart.md.txt",
+        ]),
+      );
+      // FM-A: never requested the broken double-extension variant
+      const requested = mockFetchFn.mock.calls.map((c) => c[0] as string);
+      expect(requested.some((u) => u.endsWith(".md.txt.md"))).toBe(false);
+    });
   });
 
   describe("error handling", () => {
