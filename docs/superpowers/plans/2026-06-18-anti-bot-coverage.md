@@ -140,10 +140,17 @@ git commit -m "feat(fetcher): add isAuthRedirect guard helper for cross-site aut
 
 - [ ] **Step 1: Write the failing tests**
 
-Mirror the file's harness: `vi.mock("axios")`, `const mockedAxios = vi.mocked(axios, true)`, build the fetcher as the existing tests do (`new HttpFetcher(appConfig.scraper)` via `loadConfig()` — copy the exact construction from the top of the file). Append:
+**Review R1 corrections to the harness (verified against the real file):** the file uses
+`vi.mock("axios")` + `const mockedAxios = vi.mocked(axios, true)`, and a factory
+`const createFetcher = () => new HttpFetcher(DEFAULT_CONFIG.scraper)` — **each `it` declares its
+own `const fetcher = createFetcher();`** (there is NO shared `fetcher`, and it uses `DEFAULT_CONFIG`,
+not `loadConfig()`). Also **`FetchStatus` is NOT imported** in this test file — assert the status
+string `"success"` (the file's existing convention, e.g. its 304 test compares to `"not_modified"`).
+Append:
 
 ```ts
 it("throws AUTH_REDIRECT and never returns content when redirected to a login host", async () => {
+  const fetcher = createFetcher();
   mockedAxios.get.mockResolvedValueOnce({
     status: 302,
     headers: { location: "https://accounts.google.com/v3/signin/identifier?oauth=1" },
@@ -155,6 +162,7 @@ it("throws AUTH_REDIRECT and never returns content when redirected to a login ho
 });
 
 it("retries a transient auth redirect and succeeds on the next attempt", async () => {
+  const fetcher = createFetcher();
   mockedAxios.get
     .mockResolvedValueOnce({
       status: 302,
@@ -170,13 +178,10 @@ it("retries a transient auth redirect and succeeds on the next attempt", async (
     maxRetries: 1,
     retryDelay: 0,
   });
-  expect(res.status).toBe(FetchStatus.SUCCESS);
+  expect(res.status).toBe("success");
   expect(res.content.toString()).toContain("Usable content");
 });
 ```
-
-(Use the exact `fetcher` variable name + construction the existing tests use. If they assert
-`res.content` differently, mirror that. `FetchStatus` is already imported in the test file.)
 
 - [ ] **Step 2: Run — verify it fails**
 
