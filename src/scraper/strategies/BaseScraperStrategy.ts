@@ -407,8 +407,10 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
           }
 
           // Never ignore errors for the root URL (depth 0) - if it fails, the job should fail
-          // There's no point in "successfully" completing with 0 documents
-          if (item.depth === 0) {
+          // There's no point in "successfully" completing with 0 documents.
+          // Exception: llms.txt-listed pages are queued at depth 0 but are not the
+          // real entry URL, so a single one failing must not abort the whole import.
+          if (item.depth === 0 && !item.fromLlmsTxt) {
             throw error;
           }
 
@@ -419,7 +421,7 @@ export abstract class BaseScraperStrategy implements ScraperStrategy {
           this.recordChildPageFailure(item);
           ensureFailureRateWithinThreshold();
 
-          if (options.ignoreErrors) {
+          if (options.ignoreErrors || item.fromLlmsTxt) {
             logger.error(`❌ Failed to process ${item.url}: ${error}`);
             return [];
           }

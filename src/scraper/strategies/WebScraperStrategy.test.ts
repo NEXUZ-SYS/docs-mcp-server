@@ -1970,6 +1970,46 @@ describe("WebScraperStrategy", () => {
       const requested = mockFetchFn.mock.calls.map((c) => c[0] as string);
       expect(requested.some((u) => u.endsWith(".md.txt.md"))).toBe(false);
     });
+
+    it("does not abort the whole llms.txt import when one listed page fails", async () => {
+      options.url = "https://ai.google.dev/gemini-api/docs/llms.txt";
+      options.scope = "subpages";
+      options.maxDepth = 1;
+      const llms =
+        "Gemini API Docs\n\n## Docs\n\n" +
+        "- [Bad](https://ai.google.dev/gemini-api/docs/bad.md.txt): x\n" +
+        "- [Good](https://ai.google.dev/gemini-api/docs/good.md.txt): y\n";
+      mockFetchFn.mockImplementation(async (url: string) => {
+        if (url.endsWith("/llms.txt"))
+          return {
+            content: llms,
+            mimeType: "text/plain",
+            source: url,
+            status: FetchStatus.SUCCESS,
+          };
+        if (url.includes("/bad.md.txt"))
+          throw new Error("Redirect loop detected (cyclic Location).");
+        if (url.includes("/good.md.txt"))
+          return {
+            content: "# Good\nUsable content here.",
+            mimeType: "text/plain",
+            source: url,
+            status: FetchStatus.SUCCESS,
+          };
+        return {
+          content: "",
+          mimeType: "text/plain",
+          source: url,
+          status: FetchStatus.NOT_FOUND,
+        };
+      });
+      const progressCallback = vi.fn<ProgressCallback<ScraperProgressEvent>>();
+      await expect(strategy.scrape(options, progressCallback)).resolves.toBeUndefined();
+      const indexed = progressCallback.mock.calls
+        .map((c) => c[0].result?.url)
+        .filter(Boolean);
+      expect(indexed).toContain("https://ai.google.dev/gemini-api/docs/good.md.txt");
+    });
   });
 
   describe("error handling", () => {
