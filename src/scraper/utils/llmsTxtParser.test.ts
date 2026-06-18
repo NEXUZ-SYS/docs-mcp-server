@@ -2,6 +2,31 @@ import { describe, expect, it } from "vitest";
 import { isLlmsTxtUrl, parseLlmsTxt } from "./llmsTxtParser";
 
 describe("parseLlmsTxt", () => {
+  it("parses llms.txt without an H1 (bare title line + ## sections, e.g. ai.google.dev)", () => {
+    const result = parseLlmsTxt(`Gemini API Docs and API Reference
+
+## Docs
+
+- [Quickstart](https://ai.google.dev/gemini-api/docs/quickstart.md.txt): Get started
+- [Text generation](https://ai.google.dev/gemini-api/docs/text-generation.md.txt): Generate text
+`);
+
+    expect(result.links.map((l) => l.url)).toEqual([
+      "https://ai.google.dev/gemini-api/docs/quickstart.md.txt",
+      "https://ai.google.dev/gemini-api/docs/text-generation.md.txt",
+    ]);
+    expect(result.sections).toHaveLength(1);
+    expect(result.sections[0].title).toBe("Docs");
+    expect(result.projectName).toBe("Gemini API Docs and API Reference");
+  });
+
+  it("still rejects HTML and link-less content masquerading as llms.txt", () => {
+    expect(
+      parseLlmsTxt("<!doctype html><html><body>nope</body></html>").links,
+    ).toHaveLength(0);
+    expect(parseLlmsTxt("just some prose with no links at all").links).toHaveLength(0);
+  });
+
   it("parses complete llms.txt content with sections and summary", () => {
     const result = parseLlmsTxt(`# Example Docs
 
@@ -86,10 +111,11 @@ describe("parseLlmsTxt", () => {
 
   it("returns an empty result for empty or invalid content", () => {
     expect(parseLlmsTxt("")).toEqual({ sections: [], links: [] });
-    expect(parseLlmsTxt("No heading\n- [Link](https://example.com)")).toEqual({
-      sections: [],
-      links: [],
-    });
+    // No-H1 docs WITH links are now accepted (bare title + link list, e.g. ai.google.dev):
+    // the first content line becomes the project name and the links are parsed.
+    expect(parseLlmsTxt("No heading\n- [Link](https://example.com)").links).toEqual([
+      { title: "Link", url: "https://example.com", optional: false },
+    ]);
     expect(parseLlmsTxt("# Project\n\nNo links")).toEqual({ sections: [], links: [] });
   });
 
