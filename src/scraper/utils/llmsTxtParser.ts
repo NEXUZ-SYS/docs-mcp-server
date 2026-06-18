@@ -56,17 +56,35 @@ export function parseLlmsTxt(content: string): LlmsTxtResult {
 
   const lines = content.split(/\r?\n/);
   const firstH1Index = lines.findIndex((line) => /^#\s+\S/.test(line));
-  if (firstH1Index === -1) {
-    return emptyLlmsTxtResult();
-  }
 
-  const projectName = lines[firstH1Index].replace(/^#\s+/, "").trim();
-  if (!projectName) {
-    return emptyLlmsTxtResult();
+  // Standard llms.txt opens with an H1 title. Some sites (e.g. ai.google.dev) omit it,
+  // using a bare title line followed by `## ` sections. Accept both: when there is no H1,
+  // derive an optional project name from the first content line (if it isn't itself a
+  // heading/list/quote) and parse from there. The link-count guard below still rejects
+  // arbitrary prose, and HTML was already rejected above.
+  let projectName: string | undefined;
+  let startIndex: number;
+  if (firstH1Index !== -1) {
+    projectName = lines[firstH1Index].replace(/^#\s+/, "").trim();
+    if (!projectName) {
+      return emptyLlmsTxtResult();
+    }
+    startIndex = firstH1Index + 1;
+  } else {
+    const firstContentIndex = lines.findIndex((line) => line.trim() !== "");
+    if (
+      firstContentIndex !== -1 &&
+      !/^\s*(?:#{1,6}\s|[-*+]\s|>)/.test(lines[firstContentIndex])
+    ) {
+      projectName = lines[firstContentIndex].trim();
+      startIndex = firstContentIndex + 1;
+    } else {
+      startIndex = 0;
+    }
   }
 
   const result: LlmsTxtResult = {
-    projectName,
+    ...(projectName ? { projectName } : {}),
     sections: [],
     links: [],
   };
@@ -75,7 +93,7 @@ export function parseLlmsTxt(content: string): LlmsTxtResult {
   const summaryLines: string[] = [];
   let collectingSummary = true;
 
-  for (const line of lines.slice(firstH1Index + 1)) {
+  for (const line of lines.slice(startIndex)) {
     if (/^#\s+\S/.test(line)) {
       collectingSummary = false;
       continue;
